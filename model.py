@@ -76,8 +76,7 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
 '''旋转嵌入'''
 # 注意：此处的dim应为dim//n_head， 因为我们是对
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
-
-
+    pass
 
 if __name__ == "__main__":
 
