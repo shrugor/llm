@@ -134,6 +134,10 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
         .reshape(bs, slen, n_kv_heads*n_rep, head_dim)  # 重新塑性，合并键值对头的数量和重复次数的维度
     )
 
+class Attention(nn.Module):
+    def __init__(self, args: ModelConfig):
+        super().__init__()
+        # 根据是否指定n_
 
 if __name__ == "__main__":
 
