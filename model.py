@@ -1,4 +1,5 @@
 from transformers import PretrainedConfig, PreTrainedModel
+from transformers.modeling_outputs import CausalLMOutputWithPast
 import torch.nn as nn
 import torch
 import math
@@ -286,10 +287,10 @@ class Transformer(PreTrainedModel):
     config_class = ModelConfig
     last_loss: Optional[torch.Tensor]
 
-    def __init__(self, arg: ModelConfig=None):
+    def __init__(self, args: ModelConfig=None):
         super().__init__(args)
         # 初始化模型参数
-        self.args = arg
+        self.args = args
         # 词汇表大小
         self.vocab_size = args.vocab_size
         # 层数
@@ -320,10 +321,97 @@ class Transformer(PreTrainedModel):
         self.apply(self._init_weights)
         # 对残差投影进行特殊的缩放初始化
         for pn, p in self.named_parameters():
-            if pn.endswith('w3.weight') or pn.ends
+            if pn.endswith('w3.weight') or pn.endswith('wo.weight'):
+                torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2*args.n_layers))
+        
+        # 初始化最后一次前向传播的损失属性
+        self.last_loss = None
+        self.OUT = CausalLMOutputWithPast()
+        self._no_split_modules = [name for name, _ in self.named_modules()]  # 不分割的模块列表
 
+    def _init_weight(self, module):
+        # 初始化权重的函数
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+    
+    def forward(self, tokens: torch.Tensor, targets: Optional[torch.Tensor]=None, **kwargs) -> torch.Tensor:
+        '''
+        - tokens: Optional[torch.Tensor], 输入token张量
+        - target: Optional[torch.Tensor], 目标token张量
+        - kv_cache:bool, 是否使用键值缓存
+        - kwargs:其它关键字参数
+        '''
+        if 'input_ids' in kwargs:
+            tokens = kwargs['input_ids']
+        if 'attention_mask' in kwargs:
+            target = kwargs['attention_mask']
+        
+        # 前向传播函数
+        _bsz, seqlen = tokens.shape
+        # 通过词嵌入层和Dropout层
+        h = self.tok_embeddings(tokens)
+        h = self.dropout(h)
+        # 获取相对位置嵌入频率
+        freqs_cos = self.freqs_cos[:seqlen]
+        freqs_sin = self.freqs_sin[:seqlen]
+        
+        # 通过Decoder层
+        for layer in self.layers:
+            h = layer(h, freqs_cos, freqs_sin)
+        # 通过归一化层
+        h = self.norm(h)
 
+        if targets is not None:
+            # 如果定义了目标，计算损失
+            logits = self.output(h)
+            self.last_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=0, reduction='none')
+        else:
+            # 推理时的小优化：只对最后一个位置的输出进行前向传播
+            logits = self.output(h[:, [-1], :])
+            self.last_loss = None
+        
+        # 设置输出
+        self.OUT.__setitem__('logits', logits)
+        self.OUT.__setitem__('last_loss', self.last_loss)
+        return self.OUT
+    
+    @torch.inference_mode()
+    def generate(self, idx, stop_id=None, max_new_tokens=256, temperature=1.0, top_k=None):  # todo: 优化采样
+        '''
+        给定输入序列idx 形状为(bz, seq_len)的长整型张量，通过多次生成新token来完成序列
+        在model.eval()模式下运行。效率较低的采样版本，没有使用k/v cache
+        '''
+        index = idx.shape[1]
+        for _ in range(max_new_tokens):
+            # 如果序列上下文过长，截断它到最大长度
+            idx_cond = idx if idx.size(1) <= self.args.max_seq_len else idx[:, -self.args.max_seq_len:]
 
+            # 前向传播获取序列中最后一个位置的logits
+            logits = self(idx_cond).logits
+            logits = logits[:, -1, :] # 只保留最后一个时间步的输出
+
+            if temperature == 0.0:
+                _, idx_next = torch.topk(logits, k=1, dim=-1)
+            else:
+                # 缩放logits并应用softmax
+                logits = logits / temperature
+                if top_k is not None:
+                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                    logits[logits < v[:, [-1]]] = -float('Inf')
+                prob = F.softmax(logits, dim=-1)
+                idx_next = torch.multinomial(prob, num_samples=1)
+            
+            if idx_next == stop_id:
+                break
+            
+            # 将采样的索引添加到序列中并继续
+            idx = torch.cat((idx, idx_next), dim=1)
+
+        return idx[:, index:]  # 只返回生成的token
 
 
 if __name__ == "__main__":
@@ -362,10 +450,27 @@ if __name__ == "__main__":
     # print(output.shape)
 
     # test DecoderLayer
-    decoderlayer = DecoderLayer(0, args)
-    dim = args.dim
-    seq_len = 50
-    x = torch.randn(1, seq_len, dim)
-    freqs_cos, freqs_sin = precompute_freqs_cis(dim//args.n_heads, seq_len)
-    out = decoderlayer(x, freqs_cos, freqs_sin)
-    print(out.shape)
+    # decoderlayer = DecoderLayer(0, args)
+    # dim = args.dim
+    # seq_len = 50
+    # x = torch.randn(1, seq_len, dim)
+    # freqs_cos, freqs_sin = precompute_freqs_cis(dim//args.n_heads, seq_len)
+    # out = decoderlayer(x, freqs_cos, freqs_sin)
+    # print(out.shape)
+
+    # test transformer forward
+    # x = torch.randint(0,6144, (1,50))
+    # model = Transformer(args=args)
+    # num_params = sum(p.numel() for p in model.parameters())
+    # print('Number of parameters: ', num_params)
+    # out = model(x)
+    # print(out)
+    # print(out.logits.shape)
+
+    # test transformer generate
+    # config = ModelConfig()
+    # model = Transformer(config)
+    # idx = torch.randint(0, config.vocab_size, (1, 10))
+    # print(idx.shape)
+    # generated_tokens = model.generate(idx, max_new_tokens=20)
+    # print(generated_tokens)    
