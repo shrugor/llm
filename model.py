@@ -380,7 +380,7 @@ class Transformer(PreTrainedModel):
         return self.OUT
     
     @torch.inference_mode()
-    def generate(self, idx, stop_id=None, max_new_tokens=256, temperature=1.0, top_k=None):  # todo: 优化采样
+    def generate(self, idx, stop_id=None, max_new_tokens=256, temperature=1.0, top_k=None):  # todo: 优化，使用 kv cache
         '''
         给定输入序列idx 形状为(bz, seq_len)的长整型张量，通过多次生成新token来完成序列
         在model.eval()模式下运行。效率较低的采样版本，没有使用k/v cache
