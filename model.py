@@ -1,8 +1,9 @@
-from transformers import PretrainedConfig
+from transformers import PretrainedConfig, PreTrainedModel
 import torch.nn as nn
 import torch
 import math
 import torch.nn.functional as F
+from typing import Optional
 
 
 '''定义超参数'''
@@ -221,6 +222,109 @@ class Attention(nn.Module):
         output = self.resid_dropout(output)
         return output
 
+'''MLP'''
+class MLP(nn.Module):
+    def __init__(self, dim: int, hidden_dim: int, multiple_of: int, dropout: float):
+        super().__init__()
+        # 如果没有指定隐藏层的维度，我们将其设置为输入维度的4倍
+        # 然后将其减少到2/3，最后确保它是multiple_of的倍数
+        if hidden_dim is None:
+            hidden_dim = 4 * dim
+            hidden_dim = int(2 * hidden_dim / 3)
+            hidden_dim = multiple_of * ((hidden_dim + multiple_of -1) // multiple_of)
+        # 定义第一层线性变换，从输入维度到隐藏维度
+        self.w1 = nn.Linear(dim, hidden_dim, bias=False)
+        # 定义第二层线性变换，从隐藏维度到输入维度
+        self.w2 = nn.Linear(hidden_dim, dim, bias=False)
+        # 定义第三层线性变换，从输入维度到隐藏维度
+        self.w3 = nn.Linear(dim, hidden_dim, bias=False)
+        # 定义dropout层，用于防止过拟合
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        # 前向传播函数
+        # 首先，输入x通过第一层线性变换和SILU激活函数
+        # 然后，结果乘以输入x通过第三层线性变换的结果
+        # 最后，通过第二层线性变换和dropout层
+        return self.dropout(self.w2(F.silu(self.w1(x))* self.w3(x)))
+
+'''Decoder Layer'''
+class DecoderLayer(nn.Module):
+    def __init__(self, layer_id: int, args: ModelConfig):
+        super().__init__()
+        # 定义多头注意力的头数
+        self.n_heads = args.n_heads
+        # 定义输入维度
+        self.dim = args.dim
+        # 定义每个头的维度，等于输入维度除以头数
+        self.head_dim = args.dim // args.n_heads
+        # 定义LLaMAAttention对象，用于进行多头注意力计算
+        self.attention = Attention(args)
+        # 定义LLaMAMLP对象，用于进行前馈神经网络计算
+        self.feed_forward = MLP(
+            dim=args.dim,
+            hidden_dim=args.hidden_dim,
+            multiple_of=args.multiple_of,
+            dropout=args.dropout,
+        )
+        # 定义层id
+        self.layer_id = layer_id
+        # 定义注意力计算的归一化层
+        self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        # 定义前馈神经网络计算的归一化层
+        self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+    
+    def forward(self, x, freqs_cos, freqs_sin):
+        # 前向传播函数
+        # 首先，输入x经过注意力归一化层，然后进行注意力计算，结果与输入x相加得到h
+        # 然后，h经过前馈神经网络归一化层，然后进行前馈神经网络计算，结果与h相加得到输出
+        h = x + self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin)
+        out = h + self.feed_forward.forward(self.ffn_norm(h))
+        return out
+    
+class Transformer(PreTrainedModel):
+    config_class = ModelConfig
+    last_loss: Optional[torch.Tensor]
+
+    def __init__(self, arg: ModelConfig=None):
+        super().__init__(args)
+        # 初始化模型参数
+        self.args = arg
+        # 词汇表大小
+        self.vocab_size = args.vocab_size
+        # 层数
+        self.n_layers = args.n_layers
+        
+        # 词嵌入层
+        self.tok_embeddings = nn.Embedding(args.vocab_size, args.dim)
+        # Dropout层
+        self.dropout = nn.Dropout(args.dropout)
+        # Decoder层
+        self.layers = torch.nn.ModuleList()
+        for layer_id in range(args.n_layers):
+            self.layers.append(DecoderLayer(layer_id, args))
+        # 归一化层
+        self.norm = RMSNorm(args.dim, eps=args.norm_eps)
+        # 输出层
+        self.output = nn.Linear(args.dim, args.vocab_size, bias=False)
+        
+        # 将词嵌入层的权重与输出层的权重共享
+        self.tok_embeddings.weight = self.output.weight
+
+        # 预计算相对位置嵌入的频率
+        freqs_cos, freqs_sin = precompute_freqs_cis(self.args.dim // self.args.n_heads, self.args.max_seq_len)
+        self.register_buffer("freqs_cos", freqs_cos, persistent=False)
+        self.register_buffer("freqs_sin", freqs_sin, persistent=False)
+
+        # 初始化所有权重
+        self.apply(self._init_weights)
+        # 对残差投影进行特殊的缩放初始化
+        for pn, p in self.named_parameters():
+            if pn.endswith('w3.weight') or pn.ends
+
+
+
+
 
 if __name__ == "__main__":
 
@@ -242,13 +346,26 @@ if __name__ == "__main__":
     # print(xq_out.shape, xk_out.shape)
 
     # test attention
-    attention_model = Attention(args)
-    batch_size = 1
-    seq_len= 50
-    dim = args.dim
-    x = torch.rand(batch_size, seq_len, dim)
-    freqs_cos, freqs_sin = precompute_freqs_cis(dim//args.n_heads, seq_len)
-    output = attention_model(x, freqs_cos, freqs_sin)
-    print(output.shape)
+    # attention_model = Attention(args)
+    # batch_size = 1
+    # seq_len= 50
+    # dim = args.dim
+    # x = torch.rand(batch_size, seq_len, dim)
+    # freqs_cos, freqs_sin = precompute_freqs_cis(dim//args.n_heads, seq_len)
+    # output = attention_model(x, freqs_cos, freqs_sin)
+    # print(output.shape)
 
-    # 
+    # test MLP
+    # mlp = MLP(args.dim, args.hidden_dim, args.multiple_of, args.dropout)
+    # x = torch.randn(1, 50, args.dim)
+    # output = mlp(x)
+    # print(output.shape)
+
+    # test DecoderLayer
+    decoderlayer = DecoderLayer(0, args)
+    dim = args.dim
+    seq_len = 50
+    x = torch.randn(1, seq_len, dim)
+    freqs_cos, freqs_sin = precompute_freqs_cis(dim//args.n_heads, seq_len)
+    out = decoderlayer(x, freqs_cos, freqs_sin)
+    print(out.shape)
