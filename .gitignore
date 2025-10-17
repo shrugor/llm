@@ -6,3 +6,7 @@
 *.gitattributes
 *.bz2
 *.json
+*.mdl
+*.mv
+*.txt
+*.bin

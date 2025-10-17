@@ -1,5 +1,7 @@
 import math
-from typing import Optional, Tuple
+import inspect
+from dataclasses import dataclass
+from typing import Any, Optional, Tuple
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -333,20 +335,20 @@ class Transformer(PreTrainedModel):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
     
-    def forward(self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None, **kwargs) -> torch.Tensor:
+    def forward(self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None, **keyargs) -> torch.Tensor:
         """
         - tokens: Optional[torch.Tensor], 输入 token 张量。
         - targets: Optional[torch.Tensor], 目标 token 张量。
         - kv_cache: bool, 是否使用键值缓存。
-        - kwargs: 其他关键字参数。
+        - keyargs: 其他关键字参数。
 
         - self.OUT: CausalLMOutputWithPast, 包含 logits 和损失。
         """
 
-        if 'input_ids' in kwargs:
-            tokens = kwargs['input_ids']
-        if 'attention_mask' in kwargs:
-            targets = kwargs['attention_mask']
+        if 'input_ids' in keyargs:
+            tokens = keyargs['input_ids']
+        if 'attention_mask' in keyargs:
+            targets = keyargs['attention_mask']
 
         # 前向传播函数
         _bsz, seqlen = tokens.shape
@@ -415,7 +417,7 @@ class Transformer(PreTrainedModel):
         return idx[:, index:] # 只返回生成的token
 
 if __name__ == '__main__':
-    tokenizer = AutoTokenizer.from_pretrained("/home/zhanghudong/llm/tokenizer/config")
+    tokenizer = AutoTokenizer.from_pretrained("tokenizer_k")
     args = ModelConfig(
         dim=1024,
         n_layers=18,
