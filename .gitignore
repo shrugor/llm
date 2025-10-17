@@ -1,3 +1,8 @@
-*
-!.gitignore
-!*.py
+*.pth
+*.sh
+*.pyc
+*.msc
+*.jsonl
+*.gitattributes
+*.bz2
+*.json
