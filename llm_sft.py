@@ -173,6 +173,10 @@ class SupervisedDataset(Dataset):
                 
 if __name__ == "__main__":
 
+    # 加载脚本参数
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
     # 初始化 SwanLab
     # swanlab.init(project="sft", experiment_name="qwen-1.5b")
     
